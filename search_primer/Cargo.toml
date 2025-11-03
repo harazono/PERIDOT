@@ -18,6 +18,10 @@ getopts = "0.2.21"
 # Error handling
 anyhow = "*"
 
+# Logging and time
+chrono = { version = "0.4", features = ["serde"] }
+rand = "0.8.5"
+
 [profile.dev]
 opt-level = 0
 

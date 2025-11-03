@@ -29,6 +29,7 @@ cargo build --release --bin search_primer_pipeline
 - `build_cbf` - CBF構築専用
 - `extract_candidates` - 候補抽出専用
 - `remove_false_positives` - 偽陽性除去専用
+- `primer3_caller` - Primer3統合ツール（NEW）
 
 ## 使い方
 
@@ -78,6 +79,19 @@ hashset_size = 536870912             # 2^29
 ./target/release/remove_false_positives input.cbf input.fasta -a 1000 -t 8 -o final_results.txt
 ```
 
+#### Primer3統合ツール
+
+```bash
+# LR-tupleからプライマー設計
+./target/release/primer3_caller lr_tuples.bin -c primer3_config.txt -o primers.txt
+
+# 設定ファイル指定
+./target/release/primer3_caller lr_tuples.bin -c primer3_config.txt --search-config config.toml -t 8
+
+# 一時ファイルディレクトリ指定
+./target/release/primer3_caller lr_tuples.bin -c primer3_config.txt -m /tmp/primer3_work
+```
+
 ### 3. コマンドラインオプション
 
 #### 共通オプション
@@ -97,6 +111,12 @@ hashset_size = 536870912             # 2^29
 
 - `--cbf CBF_FILE` - 既存CBFファイルを使用
 - `--save-cbf` - CBFファイルを保存
+
+#### Primer3ツール専用オプション
+
+- `-c, --config CONFIG` - Primer3設定ファイル（必須）
+- `--search-config CONFIG` - Search Primer設定ファイル
+- `-m, --tmpfile PREFIX` - 一時ファイル名プレフィックス
 
 ### 4. 出力形式
 
@@ -160,6 +180,31 @@ Error: No such file or directory
 ```
 
 → ファイルパスを確認してください
+
+## Primer3統合機能
+
+### 機能概要
+- LR-tupleからPrimer3を使用したプライマー設計
+- バージョン情報の自動記録（`primer3_info.log`）
+- エラーハンドリングとログ出力の改善
+- マルチスレッド対応
+
+### 出力ファイル
+- **プライマー結果**: 指定した出力ファイル
+- **バージョンログ**: `primer3_info.log`（実行ディレクトリ）
+- **エラーログ**: 標準エラー出力
+
+### Primer3設定ファイル例
+```
+PRIMER_TASK=pick_pcr_primers
+PRIMER_OPT_SIZE=30
+PRIMER_MIN_SIZE=16
+PRIMER_MAX_SIZE=32
+PRIMER_PRODUCT_SIZE_RANGE=101-200 201-301
+PRIMER_OPT_TM=66.0
+PRIMER_MAX_TM=72.0
+PRIMER_EXPLAIN_FLAG=1
+```
 
 ## アルゴリズム概要
 
