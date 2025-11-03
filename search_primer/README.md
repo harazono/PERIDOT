@@ -5,10 +5,12 @@ DNA配列から高頻度で出現するLR-tuple（Left-Right tuple）を効率�
 ## ビルド方法
 
 ### 必要な環境
+
 - Rust 1.70以上
 - Cargo
 
 ### ビルド手順
+
 ```bash
 # プロジェクトディレクトリに移動
 cd search_primer
@@ -21,6 +23,7 @@ cargo build --release --bin search_primer_pipeline
 ```
 
 ### 利用可能なバイナリ
+
 - `search_primer` - オリジナル版（互換性維持）
 - `search_primer_pipeline` - 統合パイプライン版（推奨）
 - `build_cbf` - CBF構築専用
@@ -47,6 +50,7 @@ hashset_size = 536870912             # 2^29
 ### 2. 基本的な使用方法
 
 #### 統合パイプライン（推奨）
+
 ```bash
 # デフォルト設定で実行
 ./target/release/search_primer_pipeline input.fasta
@@ -62,6 +66,7 @@ hashset_size = 536870912             # 2^29
 ```
 
 #### 段階的実行
+
 ```bash
 # 1. CBF構築
 ./target/release/build_cbf input.fasta -o input.cbf -c config.toml -t 8
@@ -76,6 +81,7 @@ hashset_size = 536870912             # 2^29
 ### 3. コマンドラインオプション
 
 #### 共通オプション
+
 - `-c, --config CONFIG` - 設定ファイルパス
 - `-t, --threads THREADS` - スレッド数（デフォルト: 8）
 - `-a, --threshold THRESHOLD` - 閾値（デフォルト: 1000）
@@ -83,16 +89,19 @@ hashset_size = 536870912             # 2^29
 - `-h, --help` - ヘルプ表示
 
 #### 出力形式オプション
+
 - `-b, --binary` - バイナリ形式で出力
 - `-r, --only-num` - カウントのみ出力
 
 #### パイプライン専用オプション
+
 - `--cbf CBF_FILE` - 既存CBFファイルを使用
 - `--save-cbf` - CBFファイルを保存
 
 ### 4. 出力形式
 
 #### テキスト形式（デフォルト）
+
 ```
 ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATC
 GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAG
@@ -100,20 +109,24 @@ GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAG
 ```
 
 #### カウントのみ（-r オプション）
+
 ```
-lr_tuple count: 1234	threshold: 1000	input file: input.fasta
+lr_tuple count: 1234 threshold: 1000 input file: input.fasta
 ```
 
 #### バイナリ形式（-b オプション）
+
 16バイトのu128値が連続して出力されます。
 
 ### 5. パフォーマンス最適化
 
 #### メモリ使用量
+
 - CBFファイル: 約2GB
 - 作業メモリ: 入力ファイルサイズの2-3倍
 
 #### 推奨設定
+
 ```bash
 # 大規模データセット用
 ./target/release/search_primer_pipeline large_input.fasta -t 32 -a 500 --save-cbf
@@ -125,21 +138,27 @@ lr_tuple count: 1234	threshold: 1000	input file: input.fasta
 ### 6. トラブルシューティング
 
 #### CBF互換性エラー
+
 ```
 Error: CBF file incompatible with current config
 ```
+
 → 設定が変更された場合、CBFを再構築してください
 
 #### メモリ不足
+
 ```
 Error: failed to allocate memory
 ```
+
 → スレッド数を減らすか、より小さな閾値を使用してください
 
 #### ファイルが見つからない
+
 ```
 Error: No such file or directory
 ```
+
 → ファイルパスを確認してください
 
 ## アルゴリズム概要
@@ -158,6 +177,7 @@ Error: No such file or directory
 ### 2. 3段階処理アルゴリズム
 
 #### 第1段階: Counting Bloom Filter構築
+
 ```
 for each DNA sequence:
     for each L-window position:
@@ -173,6 +193,7 @@ for each DNA sequence:
 ```
 
 #### 第2段階: 高頻度LR-tuple候補抽出
+
 ```
 for each DNA sequence:
     for each L-window position:
@@ -189,6 +210,7 @@ for each DNA sequence:
 ```
 
 #### 第3段階: 正確なカウントと偽陽性除去
+
 ```
 for each DNA sequence:
     for each L-window position:
@@ -206,21 +228,25 @@ final_results = filter(exact_count, count >= threshold)
 ### 3. 主要な最適化技術
 
 #### マルチスレッド処理
+
 - 各段階でDNA配列をチャンクに分割し、並列処理
 - スレッド間でのCBFマージとHashSet統合
 
 #### メモリ効率化
+
 - DNA配列のu128エンコーディング（2bit/base）
 - Counting Bloom Filterによる偽陽性を許容した高速フィルタリング
 - 段階的な候補絞り込みによるメモリ使用量削減
 
 #### リピート配列の除外
+
 - 各セグメントでリピート配列を検出し、スキップ
 - プライマー設計に不適切な配列の事前除去
 
 ### 4. ハッシュ関数
 
 SHA256を使用して8つの独立したハッシュ値を生成：
+
 ```rust
 hash_indices[i] = SHA256(lr_tuple)[i*4:(i+1)*4] % table_size
 ```
