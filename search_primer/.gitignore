@@ -1,6 +1,0 @@
-/target
-src/bin/.*/
-.DS_Store
-testspace
-Snakemake/.Snakefile
-Snakemake/Snakefile_test

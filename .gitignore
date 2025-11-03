@@ -1,0 +1,4 @@
+/target
+src/bin/.*/
+.DS_Store
+testspace
