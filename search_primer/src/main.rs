@@ -1,22 +1,17 @@
 extern crate bio;
 extern crate getopts;
-extern crate rdxsort;
 use crate::bio::io::fasta::FastaRead;
 use bio::io::fasta::Reader as faReader;
 use bio::io::fasta::Record as faRecord;
 use getopts::Options;
+use search_primer::config::Config;
 use search_primer::counting_bloomfilter_util::{
     build_counting_bloom_filter, count_lr_tuple_with_hashtable, number_of_high_occurence_lr_tuple,
 };
-use search_primer::counting_bloomfilter_util::{
-    BLOOMFILTER_TABLE_SIZE, HASHSET_SIZE, L_LEN, R_LEN,
-};
 use search_primer::sequence_encoder_util::decode_u128_2_dna_seq;
 use search_primer::sequence_encoder_util::DnaSequence;
-// use sha2::digest::typenum::Le;
 use std::collections::HashMap;
 use std::collections::HashSet;
-// use std::ffi::c_short;
 use std::fs;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -37,6 +32,7 @@ fn main() {
 
     let mut opts = Options::new();
     opts.optopt("o", "output", "set output file name", "NAME");
+    opts.optopt("c", "config", "config file path", "CONFIG");
     opts.optopt(
         "t",
         "thread",
@@ -48,12 +44,6 @@ fn main() {
         "threshold",
         "threshold of occurence. default value is 1000.",
         "THRESHOLD",
-    );
-    opts.optopt(
-        "m",
-        "margin_size",
-        "margin between l and r segments. default value is 0.",
-        "MARGIN_SIZE",
     );
     opts.optflag("b", "binary", "outputs binary file");
     opts.optflag("r", "only-num", "outputs only total number of lr-tuple.");
@@ -77,16 +67,20 @@ fn main() {
         return;
     };
 
+    let config = if matches.opt_present("c") {
+        let config_path = matches.opt_str("c").unwrap();
+        Config::from_file(&config_path).unwrap_or_else(|e| {
+            eprintln!("Failed to load config file: {}", e);
+            process::exit(1);
+        })
+    } else {
+        Config::default()
+    };
+
     let threads: usize = if matches.opt_present("t") {
         std::cmp::max(matches.opt_str("t").unwrap().parse::<usize>().unwrap(), 2)
     } else {
         8
-    };
-
-    let mergin_size: usize = if matches.opt_present("m") {
-        matches.opt_str("m").unwrap().parse::<usize>().unwrap()
-    } else {
-        0
     };
 
     let threshold: u16 = if matches.opt_present("a") {
@@ -123,7 +117,7 @@ fn main() {
     // CBFをマルチスレッドで作成する
     let chunk_size: usize = sequences.len() / (threads - 1);
     let sequences_ref: &Vec<DnaSequence> = &sequences;
-    let mut cbf_oyadama: Vec<u16> = vec![0; BLOOMFILTER_TABLE_SIZE];
+    let mut cbf_oyadama: Vec<u16> = vec![0; config.bloomfilter_table_size];
 
     thread::scope(|scope: &thread::Scope<'_, '_>| {
         let mut children_1: Vec<thread::ScopedJoinHandle<'_, Vec<u16>>> = Vec::new();
@@ -145,9 +139,8 @@ fn main() {
                     sequences_ref,
                     start_idx,
                     end_idx,
-                    BLOOMFILTER_TABLE_SIZE,
+                    &config,
                     i,
-                    mergin_size,
                 );
                 eprintln!(
                     "finish calling build_counting_bloom_filter[{}], {}-{}",
@@ -158,15 +151,15 @@ fn main() {
         }
         for child in children_1 {
             let cbf: Vec<u16> = child.join().unwrap();
-            assert!(cbf.len() == BLOOMFILTER_TABLE_SIZE);
-            assert!(cbf_oyadama.len() == BLOOMFILTER_TABLE_SIZE);
+            assert!(cbf.len() == config.bloomfilter_table_size);
+            assert!(cbf_oyadama.len() == config.bloomfilter_table_size);
             zip(cbf_oyadama.iter_mut(), cbf)
                 .for_each(|(x, y)| *x = x.checked_add(y).unwrap_or(u16::MAX));
         }
     });
     // CBFをマージする
     let h_cbf_h_oyadama: Arc<Mutex<HashSet<u128>>> =
-        Arc::new(Mutex::new(HashSet::with_capacity(HASHSET_SIZE)));
+        Arc::new(Mutex::new(HashSet::with_capacity(config.hashset_size)));
 
     //CBFを用いて高頻度のLR-tupleをマルチスレッドで列挙する
     let cbf_oyadama_ref: &Vec<u16> = &cbf_oyadama;
@@ -191,11 +184,9 @@ fn main() {
                     sequences_ref,
                     start_idx,
                     end_idx,
-                    HASHSET_SIZE,
                     threshold,
-                    BLOOMFILTER_TABLE_SIZE,
+                    &config,
                     i,
-                    mergin_size,
                 );
                 h_cbf_h_oyadama_ref.lock().unwrap().extend(&h_cbf_h);
                 eprintln!(
@@ -217,12 +208,11 @@ fn main() {
     */
     //高頻度のLR-tupleをハッシュテーブルを用いて数え直し、偽陽性を除去する
     let hashtable_count_result_oyadama: Arc<Mutex<HashMap<u128, u16>>> =
-        Arc::new(Mutex::new(HashMap::with_capacity(HASHSET_SIZE)));
+        Arc::new(Mutex::new(HashMap::with_capacity(config.hashset_size)));
     let hashtable_count_result_ref: &Arc<Mutex<HashMap<u128, u16>>> =
         &hashtable_count_result_oyadama;
 
     let high_occurence_lr_tuple: &HashSet<u128> = &*h_cbf_h_oyadama.lock().unwrap();
-    // let high_occurence_lr_tuple_ref: &HashSet<u128> = &HashSet::from_iter(high_occurence_lr_tuple);
     eprintln!(
         "length of high_occurence_lr_tuple: {:?}",
         high_occurence_lr_tuple.len()
@@ -247,8 +237,8 @@ fn main() {
                     start_idx,
                     end_idx,
                     &high_occurence_lr_tuple,
+                    &config,
                     i,
-                    mergin_size,
                 );
                 let mut hashtable_count_result: std::sync::MutexGuard<'_, HashMap<u128, u16>> =
                     hashtable_count_result_ref.lock().unwrap();
@@ -328,7 +318,7 @@ fn main() {
             writeln!(
                 &mut w,
                 "{:?}",
-                String::from_utf8(decode_u128_2_dna_seq(&each_lr_tuple, 54)).unwrap()
+                String::from_utf8(decode_u128_2_dna_seq(&each_lr_tuple, config.total_segment_len())).unwrap()
             )
             .unwrap();
         }
@@ -337,8 +327,8 @@ fn main() {
     eprintln!("finish writing to output file: {:?}", &output_file);
     eprint!(
         "L: {}\tR: {}\tthreshold:{}\tcardinarity: {}\t",
-        L_LEN,
-        R_LEN,
+        config.l_len,
+        config.r_len,
         threshold,
         sorted_hs_list.len(),
     );

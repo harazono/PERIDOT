@@ -1,8 +1,5 @@
-use crate::counting_bloomfilter_util::L_LEN;
-use crate::counting_bloomfilter_util::R_LEN;
-//use crate::counting_bloomfilter_util::BLOOMFILTER_TABLE_SIZE;
+use crate::config::Config;
 use std::cmp;
-//use std::hash::Hash;
 
 pub fn decode_u128_2_dna_seq(source: &u128, char_size: usize) -> Vec<u8> {
     let mut result: Vec<u8> = Vec::new();
@@ -30,11 +27,20 @@ pub fn decode_u128_2_dna_seq(source: &u128, char_size: usize) -> Vec<u8> {
     return result;
 }
 
+// 後方互換性のためのラッパー関数
 pub fn decode_u128_l(source: &u128) -> Vec<u8> {
+    decode_u128_l_with_config(source, &Config::default())
+}
+
+pub fn decode_u128_r(source: &u128) -> Vec<u8> {
+    decode_u128_r_with_config(source, &Config::default())
+}
+
+pub fn decode_u128_l_with_config(source: &u128, config: &Config) -> Vec<u8> {
     let mut result: Vec<u8> = Vec::new();
     let mut base;
-    for i in 0..L_LEN {
-        base = source >> (((L_LEN + R_LEN) - i - 1) * 2) & 3;
+    for i in 0..config.l_len {
+        base = source >> (((config.l_len + config.r_len) - i - 1) * 2) & 3;
         match base {
             0 => {
                 result.push(b'A');
@@ -56,11 +62,11 @@ pub fn decode_u128_l(source: &u128) -> Vec<u8> {
     return result;
 }
 
-pub fn decode_u128_r(source: &u128) -> Vec<u8> {
+pub fn decode_u128_r_with_config(source: &u128, config: &Config) -> Vec<u8> {
     let mut result: Vec<u8> = Vec::new();
     let mut base;
-    for i in 0..R_LEN {
-        base = source >> ((R_LEN - i - 1) * 2) & 3;
+    for i in 0..config.r_len {
+        base = source >> ((config.r_len - i - 1) * 2) & 3;
         match base {
             0 => {
                 result.push(b'A');

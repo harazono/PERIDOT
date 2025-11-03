@@ -1,9 +1,4 @@
-pub const L_LEN: usize = 32;
-pub const R_LEN: usize = 32;
-const CHUNK_MAX: usize = 200;
-
-pub const HASHSET_SIZE: usize = 1 << 29 as usize;
-pub const BLOOMFILTER_TABLE_SIZE: usize = 1 << 30 as usize;
+use crate::config::Config;
 use crate::sequence_encoder_util::DnaSequence;
 use sha2::Digest;
 use sha2::Sha256;
@@ -11,15 +6,20 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Instant;
 
+// 後方互換性のため定数を再エクスポート
+pub const L_LEN: usize = 30;
+pub const R_LEN: usize = 30;
+pub const BLOOMFILTER_TABLE_SIZE: usize = 1 << 30;
+pub const HASHSET_SIZE: usize = 1 << 29;
+
 //全てのL, Rと、hash値を出力する
 //部分配列のdecoderを書き、テストする
 pub fn build_counting_bloom_filter(
     sequences: &Vec<DnaSequence>,
     start_idx: usize,
     end_idx: usize,
-    cbf_size: usize,
+    config: &Config,
     thread_id: usize,
-    margin: usize,
 ) -> Vec<u16> {
     let mut l_window_start_idx: usize;
     let mut l_window_end_idx: usize;
@@ -29,11 +29,10 @@ pub fn build_counting_bloom_filter(
     let mut loop_cnt: usize = 0;
     eprintln!(
         "Allocating Vec<u16> where BLOOMFILTER_TABLE_SIZE = {}",
-        cbf_size
+        config.bloomfilter_table_size
     );
-    //let mut ret_array: Vec<u16> = Vec::with_capacity(m);
-    let mut ret_array: Vec<u16> = vec![0u16; cbf_size];
-    eprintln!("Filling Vec<u16; {}> with 0", cbf_size);
+    let mut ret_array: Vec<u16> = vec![0u16; config.bloomfilter_table_size];
+    eprintln!("Filling Vec<u16; {}> with 0", config.bloomfilter_table_size);
     eprintln!("finish allocating");
 
     let start_time = Instant::now();
@@ -44,11 +43,11 @@ pub fn build_counting_bloom_filter(
         let mut l_window_cnt: usize = 0;
         loop_cnt += 1;
         l_window_start_idx = 0;
-        if current_sequence.len() < L_LEN || current_sequence.len() < R_LEN {
+        if current_sequence.len() < config.l_len || current_sequence.len() < config.r_len {
             continue 'each_read;
         }
         'each_l_window: loop {
-            l_window_end_idx = l_window_start_idx + L_LEN;
+            l_window_end_idx = l_window_start_idx + config.l_len;
             if l_window_end_idx >= current_sequence.len() + 1 {
                 let end = start_time.elapsed();
                 eprintln!("1st loop[{:02}]({:05}-{:05},length is {})\t{:05?}({:.4}%)\tlength: {}\tsec: {}.{:03}\t subject to add bloom filter: {}\tl_window_cnt: {}",
@@ -70,19 +69,17 @@ pub fn build_counting_bloom_filter(
             l_window_cnt += 1;
             let (l_has_repeat_bool, l_has_repeat_offset) =
                 current_sequence.has_repeat(l_window_start_idx, l_window_end_idx);
-            //eprintln!("{}\t{}\t{}\t{}\t{}\t{}", l_window_start_idx, l_window_end_idx, l_window_end_idx - l_window_start_idx, l_has_repeat_offset, String::from_utf8(current_sequence.decode(l_window_start_idx, l_window_end_idx)).unwrap(), l_has_repeat_bool);
             if l_has_repeat_bool {
-                //eprintln!("poly base L {} {}", l_window_start_idx, &l_has_repeat_offset);
                 l_window_start_idx += l_has_repeat_offset + 1;
                 continue 'each_l_window;
             }
-            r_window_start_idx = l_window_end_idx + margin;
+            r_window_start_idx = l_window_end_idx + config.margin_size;
             'each_r_window: loop {
-                r_window_end_idx = r_window_start_idx + R_LEN;
+                r_window_end_idx = r_window_start_idx + config.r_len;
                 if r_window_end_idx > current_sequence.len() {
                     break 'each_r_window;
                 }
-                if r_window_end_idx - l_window_start_idx > CHUNK_MAX - R_LEN + margin {
+                if r_window_end_idx - l_window_start_idx > config.chunk_max - config.r_len + config.margin_size {
                     break 'each_r_window;
                 }
                 let (r_has_repeat_bool, r_has_repeat_offset) =
@@ -96,16 +93,7 @@ pub fn build_counting_bloom_filter(
                     [l_window_start_idx, l_window_end_idx],
                     [r_window_start_idx, r_window_end_idx],
                 ]);
-                let table_indice: [u32; 8] = hash_from_u128(lmr_string, cbf_size);
-                /*
-                                let mut min_val: u16 = u16::MAX;
-                                for &i in table_indice.iter() {
-                                    let idx: usize = i as usize;
-                                    if ret_array[idx] < min_val {
-                                        min_val = ret_array[idx];
-                                    }
-                                }
-                */
+                let table_indice: [u32; 8] = hash_from_u128(lmr_string, config.bloomfilter_table_size);
                 for &i in table_indice.iter() {
                     let idx: usize = i as usize;
                     if ret_array[idx] == u16::MAX {
@@ -137,18 +125,12 @@ pub fn build_counting_bloom_filter(
     return ret_array;
 }
 
-//BLOOMFILTER_TABLE_SIZEの範囲内で柔軟にhash値を返すようにする。
-
 pub fn hash_from_u128(source: u128, table_size: usize) -> [u32; 8] {
     let mut ret_val: [u32; 8] = [0; 8];
     let mut hasher = Sha256::new();
-    // u128を[u8; 16]に変換
     let u8_array: [u8; 16] = source.to_le_bytes();
-    // eprintln!("{:?}", u8_array);
     hasher.update(u8_array);
     let result = hasher.finalize();
-    // eprintln!("{:?}", result);
-    // ここから疑惑
     for i in 0..8 {
         ret_val[i] = ((result[i * 4] as u32) << 24)
             | ((result[i * 4 + 1] as u32) << 16)
@@ -157,32 +139,6 @@ pub fn hash_from_u128(source: u128, table_size: usize) -> [u32; 8] {
         ret_val[i] %= table_size as u32;
     }
     ret_val
-}
-
-pub fn hash_from_u128_old(source: u128) -> [u32; 8] {
-    let mut ret_val: [u32; 8] = [0; 8];
-    let mut hasher = Sha256::new();
-    let mut u8_array: [u8; 16] = [0; 16];
-    let mut src_copy: u128 = source;
-    for i in 0..16 {
-        u8_array[i] = (src_copy & 255).try_into().unwrap();
-        src_copy >>= 8;
-    }
-    // eprintln!("{:?}", u8_array);
-    hasher.update(u8_array);
-    let result = hasher.finalize();
-    // eprintln!("{:?}", result);
-    let sha256_bit_array = result.as_slice(); //&[u8;32]
-
-    /* ここから疑惑*/
-    for i in 0..8 {
-        for j in 0..4 {
-            ret_val[i] <<= 8; // ここのシフトのタイミングがおかしかった
-            ret_val[i] += sha256_bit_array[i * 4 + j] as u32;
-        }
-        ret_val[i] %= BLOOMFILTER_TABLE_SIZE as u32;
-    }
-    return ret_val;
 }
 
 pub fn count_occurence_from_counting_bloomfilter_table(
@@ -203,13 +159,11 @@ pub fn number_of_high_occurence_lr_tuple(
     sequences: &Vec<DnaSequence>,
     start_idx: usize,
     end_idx: usize,
-    hash_size: usize,
     threshold: u16,
-    cbf_size: usize,
+    config: &Config,
     thread_id: usize,
-    margin: usize,
 ) -> HashSet<u128> {
-    let mut ret_table: HashSet<u128> = HashSet::with_capacity(hash_size);
+    let mut ret_table: HashSet<u128> = HashSet::with_capacity(config.hashset_size);
     let mut l_window_start_idx: usize;
     let mut l_window_end_idx: usize;
     let mut r_window_start_idx: usize;
@@ -223,11 +177,11 @@ pub fn number_of_high_occurence_lr_tuple(
         let mut l_window_cnt: usize = 0;
         loop_cnt += 1;
         l_window_start_idx = 0;
-        if current_sequence.len() <= L_LEN || current_sequence.len() <= R_LEN {
+        if current_sequence.len() <= config.l_len || current_sequence.len() <= config.r_len {
             continue 'each_read;
         }
         'each_l_window: loop {
-            l_window_end_idx = l_window_start_idx + L_LEN;
+            l_window_end_idx = l_window_start_idx + config.l_len;
             if l_window_end_idx > current_sequence.len() {
                 let end: std::time::Duration = start.elapsed();
                 eprintln!("2nd loop[{:02}]({:05}-{:05},length is {})\t{:05?}({:.4}%)\tlength: {}\tsec: {}.{:03}\t high occurence LR-tuple: {}\tl_window_cnt: {}",
@@ -253,13 +207,13 @@ pub fn number_of_high_occurence_lr_tuple(
                 l_window_start_idx += l_has_repeat_offset + 1;
                 continue 'each_l_window;
             }
-            r_window_start_idx = l_window_end_idx + margin;
+            r_window_start_idx = l_window_end_idx + config.margin_size;
             'each_r_window: loop {
-                r_window_end_idx = r_window_start_idx + R_LEN;
+                r_window_end_idx = r_window_start_idx + config.r_len;
                 if r_window_end_idx >= current_sequence.len() + 1 {
                     break 'each_r_window;
                 }
-                if r_window_end_idx - l_window_start_idx > CHUNK_MAX - R_LEN + margin {
+                if r_window_end_idx - l_window_start_idx > config.chunk_max - config.r_len + config.margin_size {
                     break 'each_r_window;
                 }
                 let (r_has_repeat_bool, r_has_repeat_offset) =
@@ -273,13 +227,13 @@ pub fn number_of_high_occurence_lr_tuple(
                     [l_window_start_idx, l_window_end_idx],
                     [r_window_start_idx, r_window_end_idx],
                 ]);
-                let table_indice: [u32; 8] = hash_from_u128(lmr_string, cbf_size); //u128を受けてhashを返す関数
+                let table_indice: [u32; 8] = hash_from_u128(lmr_string, config.bloomfilter_table_size);
                 let occurence: u16 =
                     count_occurence_from_counting_bloomfilter_table(source_table, table_indice);
                 if occurence >= threshold {
                     if ret_table.len() >= (ret_table.capacity() as f64 * 0.9) as usize {
                         eprintln!("2nd loop[{:02}] attempts to reallocate HashSet.", thread_id);
-                        break 'each_read; // 再アロケーションが発生する場合、ループを終了
+                        break 'each_read;
                     }
                     ret_table.insert(lmr_string);
                 }
@@ -307,141 +261,15 @@ pub fn number_of_high_occurence_lr_tuple(
     return ret_table;
 }
 
-/* */
-pub fn aggregate_length_between_lr_tuple(
-    sequences: &Vec<DnaSequence>,
-    thread_id: usize,
-    primer: &Vec<(Vec<u8>, DnaSequence, DnaSequence)>,
-    product_size_max: usize,
-) -> Vec<u8> {
-    let mut l_window_start: usize;
-    let mut l_window_end: usize;
-    let mut r_window_start: usize;
-    let mut r_window_end: usize;
-    let mut primer_l_seq: u128;
-    let mut primer_l_size: usize;
-    let mut primer_r_seq: u128;
-    let mut primer_r_size: usize;
-    let mut mask_l: u128;
-    let mut mask_r: u128;
-    //let mut primer_id:      Vec<u8>;
-    let mut loop_cnt: usize = 0;
-    let mut ret_array: Vec<u8> = Vec::with_capacity(4_000_000_000);
-    let mut lr_hit_counter: usize = 0;
-    let mut l_hit_counter: usize = 0;
-    eprintln!("[{}]primer pairs: {}", thread_id, primer.len());
-
-    let start_time = Instant::now();
-    let mut previous_time = start_time.elapsed();
-    '_each_primer: for current_primer in primer.iter() {
-        primer_l_size = current_primer.1.len();
-        primer_l_seq = current_primer
-            .1
-            .subsequence_as_u128(vec![[0, primer_l_size]]);
-        primer_r_size = current_primer.2.len();
-        primer_r_seq = current_primer
-            .2
-            .subsequence_as_u128(vec![[0, primer_r_size]]);
-        mask_l = u128::MAX >> (64 - primer_l_size) * 2; //rustのシフト演算子はどんな数でもシフトできるのか確認する
-        mask_r = u128::MAX >> (64 - primer_r_size) * 2;
-        loop_cnt += 1;
-
-        'each_read: for current_sequence in sequences.iter() {
-            //eprintln!("{}", current_sequence.len());//見えてる
-            l_window_start = 0;
-            'each_l_window: loop {
-                l_window_end = l_window_start + primer_l_size;
-                if l_window_end >= current_sequence.len() + 1 {
-                    continue 'each_read;
-                }
-                //l_window_cnt += 1;
-                let l_window_as_u128: u128 =
-                    current_sequence.subsequence_as_u128(vec![[l_window_start, l_window_end]]);
-                if (l_window_as_u128 & mask_l) != primer_l_seq {
-                    l_window_start += 1;
-                    continue 'each_l_window;
-                }
-                //eprintln!("l pass");
-
-                r_window_start = l_window_end;
-                // println!("{}, {}", l_window_start, r_window_start);
-
-                l_hit_counter += 1;
-                'each_r_window: loop {
-                    // println!("{}, {}", l_window_start, r_window_start);
-
-                    r_window_end = r_window_start + primer_r_size;
-                    if r_window_end >= current_sequence.len() + 1 {
-                        // let end = start_time.elapsed();
-                        // eprintln!("loop[{:02}]({:05}-{:05},length is {})\t{:09?}\tlength: {}\tsec: {}.{:03}",thread_id, start_idx, end_idx, end_idx - start_idx, loop_cnt, current_sequence.len(), end.as_secs() - previous_time.as_secs(),end.subsec_millis() - previous_time.subsec_millis());
-                        // previous_time = end;
-                        l_window_start += 1;
-                        continue 'each_l_window;
-                    }
-                    if r_window_end - l_window_start > product_size_max {
-                        l_window_start += 1;
-                        continue 'each_l_window;
-                    }
-                    let r_window_as_u128: u128 =
-                        current_sequence.subsequence_as_u128(vec![[r_window_start, r_window_end]]);
-                    if (r_window_as_u128 & mask_r) != primer_r_seq {
-                        r_window_start += 1;
-                        continue 'each_r_window;
-                    }
-                    //ここまでで、LとRが一致してる
-                    //eprintln!("r pass");
-
-                    //let length: u32 = (r_window_end - l_window_start) as u32;
-                    let primer_id = &current_primer.0;
-                    let sequence_slice = current_sequence.decode(l_window_start, r_window_end);
-                    let length = r_window_end - l_window_start;
-
-                    // `>`とprimer_idと`_`を追加
-                    ret_array.push(b'>');
-                    ret_array.extend(primer_id);
-                    ret_array.push(b'_');
-
-                    // lengthを追加
-                    for digit in length.to_string().as_bytes() {
-                        ret_array.push(*digit);
-                    }
-
-                    // `\n`とsequence_sliceと`\n`を追加
-                    ret_array.push(b'\n');
-                    ret_array.extend(sequence_slice);
-                    ret_array.push(b'\n');
-                    lr_hit_counter += 1;
-                    r_window_start += 1;
-                }
-            }
-        }
-        let end = start_time.elapsed();
-        eprintln!(
-            "loop[{:02?}]: {:06?}\t{:09?}\t{}\t{}\tsec: {}.{:03}",
-            thread_id,
-            primer.len(),
-            loop_cnt,
-            lr_hit_counter,
-            l_hit_counter,
-            end.as_secs() - previous_time.as_secs(),
-            end.subsec_millis() - previous_time.subsec_millis()
-        );
-        previous_time = end;
-        lr_hit_counter = 0;
-        l_hit_counter = 0;
-    }
-    return ret_array;
-}
-
 pub fn count_lr_tuple_with_hashtable(
     sequences: &Vec<DnaSequence>,
     start_idx: usize,
     end_idx: usize,
     high_occurence_lr_tuple: &HashSet<u128>,
+    config: &Config,
     thread_id: usize,
-    margin: usize,
 ) -> HashMap<u128, u16> {
-    let hash_size_to_allocate: usize = high_occurence_lr_tuple.len() * 1.2 as usize;
+    let hash_size_to_allocate: usize = (high_occurence_lr_tuple.len() as f64 * 1.2) as usize;
     eprintln!(
         "thread [{:02}] Allocating HashMap<u128, u16> where hash_size_to_allocate = {}",
         thread_id, hash_size_to_allocate
@@ -465,11 +293,11 @@ pub fn count_lr_tuple_with_hashtable(
         let mut l_window_cnt: usize = 0;
         loop_cnt += 1;
         l_window_start_idx = 0;
-        if current_sequence.len() < L_LEN || current_sequence.len() < R_LEN {
+        if current_sequence.len() < config.l_len || current_sequence.len() < config.r_len {
             continue 'each_read;
         }
         'each_l_window: loop {
-            l_window_end_idx = l_window_start_idx + L_LEN;
+            l_window_end_idx = l_window_start_idx + config.l_len;
             if l_window_end_idx >= current_sequence.len() + 1 {
                 let end: std::time::Duration = start_time.elapsed();
                 eprintln!("hs loop[{:02}]({:05}-{:05},length is {})\t{:05?}({:.4}%)\tlength: {}\tsec: {}.{:03}\tadd_hashmap_cnt: {}\tl_window_cnt: {}, lr_tuple_hashmap.len():{}",
@@ -496,14 +324,14 @@ pub fn count_lr_tuple_with_hashtable(
                 l_window_start_idx += l_has_repeat_offset + 1;
                 continue 'each_l_window;
             }
-            r_window_start_idx = l_window_end_idx + margin;
+            r_window_start_idx = l_window_end_idx + config.margin_size;
             'each_r_window: loop {
-                r_window_end_idx = r_window_start_idx + R_LEN;
+                r_window_end_idx = r_window_start_idx + config.r_len;
                 if r_window_end_idx > current_sequence.len() {
                     l_window_start_idx += 1;
                     continue 'each_l_window;
                 }
-                if r_window_end_idx - l_window_start_idx > CHUNK_MAX - R_LEN + margin {
+                if r_window_end_idx - l_window_start_idx > config.chunk_max - config.r_len + config.margin_size {
                     break 'each_r_window;
                 }
                 let (r_has_repeat_bool, r_has_repeat_offset) =
@@ -517,43 +345,124 @@ pub fn count_lr_tuple_with_hashtable(
                     [l_window_start_idx, l_window_end_idx],
                     [r_window_start_idx, r_window_end_idx],
                 ]);
-                /*                 eprintln!(
-                                   "lr_tuple_hashmap.len(): {}\t(HASHSET_SIZE as f32 * 0.9).round() as usize: {}",
-                                    lr_tuple_hashmap.len(),
-                                   (HASHSET_SIZE as f32 * 0.9).round() as usize
-                                );
-                */
                 if lr_tuple_hashmap.len() > high_occurence_lr_tuple.len() {
                     break 'each_read;
                 }
                 if high_occurence_lr_tuple.contains(&lmr_string) {
                     *lr_tuple_hashmap.entry(lmr_string).or_insert(0) += 1;
                 }
-                /*                 eprintln!(
-                                    "lr_tuple_hashmap.entry(lmr_string):{}\tthreshold: {}",
-                                    lr_tuple_hashmap[&lmr_string], threshold
-                                );
-                */
                 r_window_start_idx += 1;
             }
             l_window_start_idx += 1;
         }
-        let end: std::time::Duration = start_time.elapsed();
-        eprintln!("hs loop[{:02}]({:05}-{:05},length is {})\t{:05?}({:.4}%)\tlength: {}\tsec: {}.{:03}\tadd_hashmap_cnt: {}\tl_window_cnt: {}, lr_tuple_hashmap.len():{}",
-            thread_id,
-            start_idx,
-            end_idx,
-            end_idx - start_idx,
-            loop_cnt,
-            loop_cnt as f64 / (end_idx - start_idx) as f64 * 100f64,
-            current_sequence.len(),
-            end.as_secs() - previous_time.as_secs(),
-            end.subsec_millis() - previous_time.subsec_millis(),
-            add_hashmap_cnt,
-            l_window_cnt,
-            lr_tuple_hashmap.len()
-        );
-        previous_time = end;
     }
     return lr_tuple_hashmap;
+}
+
+pub fn aggregate_length_between_lr_tuple(
+    sequences: &Vec<DnaSequence>,
+    thread_id: usize,
+    primer: &Vec<(Vec<u8>, DnaSequence, DnaSequence)>,
+    product_size_max: usize,
+) -> Vec<u8> {
+    let mut l_window_start: usize;
+    let mut l_window_end: usize;
+    let mut r_window_start: usize;
+    let mut r_window_end: usize;
+    let mut primer_l_seq: u128;
+    let mut primer_l_size: usize;
+    let mut primer_r_seq: u128;
+    let mut primer_r_size: usize;
+    let mut mask_l: u128;
+    let mut mask_r: u128;
+    let mut loop_cnt: usize = 0;
+    let mut ret_array: Vec<u8> = Vec::with_capacity(4_000_000_000);
+    let mut lr_hit_counter: usize = 0;
+    let mut l_hit_counter: usize = 0;
+    eprintln!("[{}]primer pairs: {}", thread_id, primer.len());
+
+    let start_time = Instant::now();
+    let mut previous_time = start_time.elapsed();
+    '_each_primer: for current_primer in primer.iter() {
+        primer_l_size = current_primer.1.len();
+        primer_l_seq = current_primer
+            .1
+            .subsequence_as_u128(vec![[0, primer_l_size]]);
+        primer_r_size = current_primer.2.len();
+        primer_r_seq = current_primer
+            .2
+            .subsequence_as_u128(vec![[0, primer_r_size]]);
+        mask_l = u128::MAX >> (64 - primer_l_size) * 2;
+        mask_r = u128::MAX >> (64 - primer_r_size) * 2;
+        loop_cnt += 1;
+
+        'each_read: for current_sequence in sequences.iter() {
+            l_window_start = 0;
+            'each_l_window: loop {
+                l_window_end = l_window_start + primer_l_size;
+                if l_window_end >= current_sequence.len() + 1 {
+                    continue 'each_read;
+                }
+                let l_window_as_u128: u128 =
+                    current_sequence.subsequence_as_u128(vec![[l_window_start, l_window_end]]);
+                if (l_window_as_u128 & mask_l) != primer_l_seq {
+                    l_window_start += 1;
+                    continue 'each_l_window;
+                }
+
+                r_window_start = l_window_end;
+                l_hit_counter += 1;
+                'each_r_window: loop {
+                    r_window_end = r_window_start + primer_r_size;
+                    if r_window_end >= current_sequence.len() + 1 {
+                        l_window_start += 1;
+                        continue 'each_l_window;
+                    }
+                    if r_window_end - l_window_start > product_size_max {
+                        l_window_start += 1;
+                        continue 'each_l_window;
+                    }
+                    let r_window_as_u128: u128 =
+                        current_sequence.subsequence_as_u128(vec![[r_window_start, r_window_end]]);
+                    if (r_window_as_u128 & mask_r) != primer_r_seq {
+                        r_window_start += 1;
+                        continue 'each_r_window;
+                    }
+
+                    let primer_id = &current_primer.0;
+                    let sequence_slice = current_sequence.decode(l_window_start, r_window_end);
+                    let length = r_window_end - l_window_start;
+
+                    ret_array.push(b'>');
+                    ret_array.extend(primer_id);
+                    ret_array.push(b'_');
+
+                    for digit in length.to_string().as_bytes() {
+                        ret_array.push(*digit);
+                    }
+
+                    ret_array.push(b'\n');
+                    ret_array.extend(sequence_slice);
+                    ret_array.push(b'\n');
+                    lr_hit_counter += 1;
+                    r_window_start += 1;
+                }
+            }
+        }
+        let end = start_time.elapsed();
+        eprintln!(
+            "loop[{:02?}]: {:06?}\t{:09?}\t{}\t{}\tsec: {}.{:03}",
+            thread_id,
+            primer.len(),
+            loop_cnt,
+            lr_hit_counter,
+            l_hit_counter,
+            end.as_secs() - previous_time.as_secs(),
+            end.subsec_millis() - previous_time.subsec_millis()
+        );
+        previous_time = end;
+        lr_hit_counter = 0;
+        l_hit_counter = 0;
+    }
+    return ret_array;
 }

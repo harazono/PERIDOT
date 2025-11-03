@@ -1,0 +1,9 @@
+[sequence]
+l_len = 30
+r_len = 30
+chunk_max = 200
+margin_size = 50
+
+[bloom_filter]
+bloomfilter_table_size = 1073741824  # 2^30
+hashset_size = 536870912             # 2^29
